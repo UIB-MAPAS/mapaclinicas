@@ -36,11 +36,23 @@
     #sidebar-header {
       background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
       color: #fff;
-      padding: 18px 20px 14px;
+      padding: 14px 20px 12px;
       flex-shrink: 0;
     }
+    #header-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+    #uib-logo {
+      height: 30px;
+      width: auto;
+      filter: brightness(0) invert(1);
+      opacity: .92;
+    }
     #sidebar-header h1 {
-      font-size: 16px;
+      font-size: 15px;
       font-weight: 700;
       letter-spacing: .4px;
       margin-bottom: 3px;
@@ -376,6 +388,9 @@
 <!-- ═══════════════════════ SIDEBAR ════════════════════════════════════════ -->
 <aside id="sidebar">
   <div id="sidebar-header">
+    <div id="header-top">
+      <img id="uib-logo" src="UIB_logo.svg" alt="UIB" />
+    </div>
     <h1>🗺 Mapa de Clínicas Afiliadas</h1>
     <p>Broker de seguros · Orientación de accidentados</p>
   </div>
@@ -441,7 +456,7 @@
 
     <!-- Legend -->
     <div class="card" id="legend-card">
-      <div class="card-title">Asesores (AASS)</div>
+      <div class="card-title">AASS</div>
       <div id="legend-items">
         <div style="font-size:11px;color:#9ca3af">Cargando locales…</div>
       </div>
