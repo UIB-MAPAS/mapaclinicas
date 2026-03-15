@@ -173,10 +173,18 @@ async function geocodeAddress(query) {
   if (geocodeCache[query]) return geocodeCache[query];
 
   const url = `${CONFIG.nominatimUrl}?q=${encodeURIComponent(query)}&format=json&limit=1&countrycodes=pe`;
+  const controller = new AbortController();
+  const timeoutId  = setTimeout(() => controller.abort(), 10000); // 10 s máx
+
   try {
     const resp = await fetch(url, {
-      headers: { 'Accept-Language': 'es', 'User-Agent': 'MapaClinicasBroker/1.0' },
+      signal:  controller.signal,
+      headers: {
+        'Accept-Language': 'es',
+        'User-Agent':      'MapaClinicasBroker/1.0 (uibmapa@gmail.com)',
+      },
     });
+    clearTimeout(timeoutId);
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const data = await resp.json();
     if (data && data.length > 0) {
@@ -187,7 +195,12 @@ async function geocodeAddress(query) {
     }
     return null;
   } catch (err) {
-    console.warn('Geocoding failed for:', query, err);
+    clearTimeout(timeoutId);
+    if (err.name === 'AbortError') {
+      console.warn('Geocoding timeout (>10 s) for:', query);
+    } else {
+      console.warn('Geocoding failed for:', query, err);
+    }
     return null;
   }
 }
