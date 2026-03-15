@@ -415,21 +415,31 @@ function findNearestClinics(lat, lng, accidenteTipo) {
     .map(c => ({ ...c, distancia: haversine(lat, lng, c.lat, c.lng) }))
     .sort((a, b) => a.distancia - b.distancia);
 
+  // Deduplicar: misma ubicación (≤11 m) + mismo tipo → quedarse solo con la primera.
+  // Distintos tipos en el mismo edificio (ej. Vesalio GENERAL vs QUEMADURA) se conservan.
+  const seen = new Set();
+  const unique = withDist.filter(c => {
+    const key = `${c.lat.toFixed(4)},${c.lng.toFixed(4)},${c.tipo}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
   if (!accidenteTipo || !ACCIDENTE_TIPOS[accidenteTipo]) {
-    return { recomendadas: [], cercanas: withDist.slice(0, CONFIG.maxClinics) };
+    return { recomendadas: [], cercanas: unique.slice(0, CONFIG.maxClinics) };
   }
 
   const { prioridad, compatibles } = ACCIDENTE_TIPOS[accidenteTipo];
 
   // Recomendadas: tipo prioritario (max 3)
-  const recomendadas = withDist
+  const recomendadas = unique
     .filter(c => prioridad.includes(c.tipo))
     .slice(0, 3);
 
   const recomIds = new Set(recomendadas.map(c => c.nombre + c.direccion));
 
   // Cercanas: tipos compatibles, sin duplicar recomendadas (max 5)
-  const cercanas = withDist
+  const cercanas = unique
     .filter(c => compatibles.includes(c.tipo) && !recomIds.has(c.nombre + c.direccion))
     .slice(0, CONFIG.maxClinics);
 

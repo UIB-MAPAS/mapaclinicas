@@ -16,10 +16,15 @@ MODOS DE USO:
   b) Importar Excel y geocodificar desde cero:
        python geocodificar_v2.py import CLINICAS_CSV.xlsx
 
-  c) Solo consultar SUNAT para obtener direcciones limpias (no geocodifica):
+  c) Re-geocodificar desde SUNAT (dirección oficial por RUC) — RECOMENDADO:
+       python geocodificar_v2.py ruc --sunat-key TOKEN
+       python geocodificar_v2.py ruc --sunat-key TOKEN --opencage-key KEY
+       python geocodificar_v2.py ruc --sunat-key TOKEN --all   (todas las filas)
+
+  d) Solo consultar SUNAT para obtener direcciones limpias (no geocodifica):
        python geocodificar_v2.py sunat
 
-  d) Generar prompt para pegar en ChatGPT/Gemini (opción 100% offline):
+  e) Generar prompt para pegar en ChatGPT/Gemini (opción 100% offline):
        python geocodificar_v2.py prompt
 
 FLAGS OPCIONALES (añadir a cualquier modo):
@@ -527,6 +532,110 @@ def cmd_prompt():
     print('  "Responde solo con el CSV, sin texto adicional ni bloques de código"')
 
 
+# ── Comando: ruc (re-geocodifica usando dirección oficial SUNAT) ──────────────
+
+def cmd_ruc(sunat_key, opencage_key=None, geoapify_key=None, do_all=False):
+    """
+    Re-geocodifica clínicas usando la dirección oficial de SUNAT por RUC.
+
+    Por defecto procesa solo las clínicas con coordenadas duplicadas (≥3 clínicas
+    en el mismo punto exacto), que son el síntoma más claro de un error de geocoding.
+
+    Uso:
+        python geocodificar_v2.py ruc --sunat-key TOKEN
+        python geocodificar_v2.py ruc --sunat-key TOKEN --opencage-key KEY
+        python geocodificar_v2.py ruc --sunat-key TOKEN --all   # todas las filas
+    """
+    if not sunat_key:
+        print("Necesitás --sunat-key. Registrate gratis en https://apis.net.pe")
+        sys.exit(1)
+
+    rows = []
+    with open(INPUT_CSV, newline='', encoding='utf-8') as f:
+        reader = csv.DictReader(f, delimiter=';')
+        fieldnames = list(reader.fieldnames)
+        for row in reader:
+            rows.append(row)
+
+    # Detectar coordenadas duplicadas (≥3 en el mismo punto = casi seguro error)
+    from collections import Counter
+    coord_counts = Counter(
+        (row.get('Lat', '').strip(), row.get('Lng', '').strip())
+        for row in rows if row.get('Lat', '').strip()
+    )
+    bad_coords = {k for k, v in coord_counts.items() if v >= 3}
+
+    if do_all:
+        to_process = list(rows)
+        print(f"Modo --all: procesando {len(rows)} clínicas\n")
+    else:
+        to_process = [
+            r for r in rows
+            if (r.get('Lat', '').strip(), r.get('Lng', '').strip()) in bad_coords
+            or not r.get('Lat', '').strip()
+        ]
+        print(f"Coordenadas duplicadas detectadas (≥3 clínicas en mismo punto): {len(bad_coords)}")
+        print(f"Clínicas a re-geocodificar: {len(to_process)} de {len(rows)}\n")
+
+    if not to_process:
+        print("✓ No hay clínicas a re-geocodificar.")
+        return
+
+    fixed = 0
+    for i, row in enumerate(to_process, 1):
+        nombre    = row.get('Nombre', '').strip()
+        ruc       = row.get('RUC', '').strip()
+        direccion = row.get('Direccion', '').strip()
+        distrito  = row.get('Distrito', '').strip()
+        zona      = row.get('Zona', '').strip()
+
+        prev_lat = row.get('Lat', '').strip()
+        prev_lng = row.get('Lng', '').strip()
+        print(f"\n[{i}/{len(to_process)}] {nombre}  (RUC: {ruc or 'N/A'})")
+        if prev_lat:
+            print(f"  Coords actuales: {prev_lat}, {prev_lng}  "
+                  f"(compartida con {coord_counts.get((prev_lat, prev_lng), 1)-1} otras)")
+
+        lat, lng, sunat_data = geocode_one(
+            nombre=nombre, ruc=ruc, direccion=direccion, distrito=distrito, zona=zona,
+            sunat_key=sunat_key, opencage_key=opencage_key, geoapify_key=geoapify_key,
+        )
+
+        if lat:
+            # Actualizar dirección con la oficial de SUNAT si está disponible
+            if sunat_data:
+                if sunat_data.get('direccion'):
+                    row['Direccion'] = sunat_data['direccion']
+                    print(f"  → Dirección SUNAT: {sunat_data['direccion']}")
+                if sunat_data.get('distrito'):
+                    row['Distrito'] = sunat_data['distrito']
+            row['Lat'] = f"{lat:.6f}"
+            row['Lng'] = f"{lng:.6f}"
+            fixed += 1
+        else:
+            print(f"  ✗ Sin resultado — se mantienen coords anteriores")
+
+        # Guardar cada 20 filas para no perder progreso
+        if i % 20 == 0:
+            _save_csv(rows, fieldnames)
+            print(f"  [Guardado parcial {i}/{len(to_process)}]")
+
+    _save_csv(rows, fieldnames)
+    print(f"\n{'='*50}")
+    print(f"Re-geocodificadas exitosamente : {fixed}/{len(to_process)}")
+    print(f"CSV actualizado : {OUTPUT_CSV}")
+    print(f"Backup          : {INPUT_CSV.replace('.csv', '_backup.csv')}")
+
+
+def _save_csv(rows, fieldnames):
+    backup = INPUT_CSV.replace('.csv', '_backup.csv')
+    shutil.copy2(INPUT_CSV, backup)
+    with open(OUTPUT_CSV, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter=';')
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 # ── Comando: locales (geocodifica locales.csv con filtro de precisión) ────────
 
 LOCALES_CSV  = 'data/locales.csv'
@@ -648,8 +757,12 @@ if __name__ == '__main__':
     print(f"  APIs activas: {' → '.join(apis)}")
     print(f"{'='*60}\n")
 
+    do_all = '--all' in sys.argv
+
     if cmd == 'fix':
         cmd_fix(sunat_key, opencage_key, geoapify_key)
+    elif cmd == 'ruc':
+        cmd_ruc(sunat_key, opencage_key, geoapify_key, do_all=do_all)
     elif cmd == 'import' and len(positional) >= 2:
         cmd_import(positional[1], sunat_key, opencage_key, geoapify_key)
     elif cmd == 'sunat':
