@@ -468,10 +468,10 @@ function clearClinicMarkers() {
 }
 
 // ─── Mostrar resultados ───────────────────────────────────────────────────────
-function clinicHTML(c, rank, isRecomendada) {
+function clinicHTML(c, rank, isRecomendada, markerIdx) {
   const badgeInfo = TIPO_BADGE[c.tipo] || TIPO_BADGE['CLINICA_GENERAL'];
   return `
-    <div class="clinic-item${isRecomendada ? ' recommended-item' : ''}" onclick="flyToClinic(${c.lat}, ${c.lng})">
+    <div class="clinic-item${isRecomendada ? ' recommended-item' : ''}" onclick="flyToMarker(${markerIdx})">
       <div class="clinic-header">
         <span class="clinic-rank">${rank}</span>
         <span class="clinic-name">${c.nombre}</span>
@@ -507,7 +507,7 @@ function displayNearestClinics(recomendadas, cercanas, addressLabel, accidenteTi
 
   if (tipoInfo && recomendadas.length > 0) {
     recTitle.textContent = `Recomendadas para ${tipoInfo.emoji} ${tipoInfo.label}`;
-    recList.innerHTML    = recomendadas.map((c, i) => clinicHTML(c, i + 1, true)).join('');
+    recList.innerHTML    = recomendadas.map((c, i) => clinicHTML(c, i + 1, true, i)).join('');
     recSection.style.display = 'block';
   } else {
     recSection.style.display = 'none';
@@ -519,7 +519,7 @@ function displayNearestClinics(recomendadas, cercanas, addressLabel, accidenteTi
   nearbyTitle.textContent = tipoInfo && recomendadas.length > 0
     ? 'Otras clínicas compatibles'
     : 'Clínicas más cercanas';
-  clinicsList.innerHTML   = cercanas.map((c, i) => clinicHTML(c, i + 1, false)).join('');
+  clinicsList.innerHTML   = cercanas.map((c, i) => clinicHTML(c, i + 1, false, recomendadas.length + i)).join('');
 
   container.classList.add('show');
   container.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -530,14 +530,12 @@ function hideResults() {
 }
 
 /** Vuela al marcador de la clínica al hacer clic en el resultado */
-function flyToClinic(lat, lng) {
-  map.flyTo([lat, lng], 16, { animate: true, duration: 1 });
-  // Busca el marcador por lat Y lng para no abrir el popup equivocado
-  const match = clinicaMarkers.find(m =>
-    Math.abs(m.getLatLng().lat - lat) < 0.0001 &&
-    Math.abs(m.getLatLng().lng - lng) < 0.0001
-  );
-  if (match) match.openPopup();
+function flyToMarker(idx) {
+  const m = clinicaMarkers[idx];
+  if (!m) return;
+  const latlng = m.getLatLng();
+  map.flyTo(latlng, 16, { animate: true, duration: 1 });
+  m.openPopup();
 }
 
 // ─── UI helpers ───────────────────────────────────────────────────────────────
