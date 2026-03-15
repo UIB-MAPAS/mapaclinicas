@@ -337,18 +337,18 @@ async function searchAccident() {
   clearClinicMarkers();
   hideResults();
 
-  const query = `${input}, Lima, ${CONFIG.country}`;
-  const coords = await geocodeAddress(query);
+  // Intento 1: query tal como la ingresó el usuario + Perú (cubre provincias)
+  let coords = await geocodeAddress(`${input}, ${CONFIG.country}`);
+
+  // Intento 2: agregando Lima (útil para búsquedas cortas sin distrito)
+  if (!coords) {
+    coords = await geocodeAddress(`${input}, Lima, ${CONFIG.country}`);
+  }
 
   if (!coords) {
-    // Retry without "Lima"
-    const coords2 = await geocodeAddress(`${input}, ${CONFIG.country}`);
-    if (!coords2) {
-      setStatus('No se encontró el lugar. Intenta agregar el distrito: "KFC Miraflores" o la dirección exacta.', 'error');
-      btn.disabled = false;
-      return;
-    }
-    Object.assign(coords, coords2);
+    setStatus('No se encontró el lugar. Intentá ser más específico: "KFC Miraflores", "av larco miraflores" o el nombre completo.', 'error');
+    btn.disabled = false;
+    return;
   }
 
   // Marcador del accidente
