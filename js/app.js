@@ -438,22 +438,28 @@ function findNearestClinics(lat, lng, accidenteTipo) {
 
 // ─── Marcadores de clínicas ───────────────────────────────────────────────────
 function addClinicMarkers(recomendadas, cercanas) {
-  const allClinics = [...(recomendadas || []), ...(cercanas || [])];
-  allClinics.forEach((c, i) => {
-    const isRecomendada = (recomendadas || []).includes(c);
-    const icon = isRecomendada ? createClinicIcon(i + 1, '#d97706') : createClinicIcon(i + 1, '#1e40af');
-    const badgeInfo = TIPO_BADGE[c.tipo] || TIPO_BADGE['CLINICA_GENERAL'];
-    const m = L.marker([c.lat, c.lng], { icon, zIndexOffset: isRecomendada ? 950 : 900 })
-      .addTo(map)
-      .bindPopup(`
-        <div class="popup-title">🏥 ${c.nombre}</div>
-        <div class="popup-row"><span class="clinic-badge ${badgeInfo.css}">${badgeInfo.label}</span></div>
-        <div class="popup-row">📍 ${c.direccion}, ${c.distrito}</div>
-        <div class="popup-row">📞 ${c.telefono}</div>
-        <div class="popup-row" style="font-weight:700;color:#059669">${c.distancia.toFixed(2)} km del accidente</div>
-      `);
-    clinicaMarkers.push(m);
-  });
+  // Cada sección numera desde 1, igual que la lista en el sidebar
+  const addGroup = (list, color, zOffset) => {
+    (list || []).forEach((c, i) => {
+      const badgeInfo = TIPO_BADGE[c.tipo] || TIPO_BADGE['CLINICA_GENERAL'];
+      const m = L.marker([c.lat, c.lng], {
+        icon: createClinicIcon(i + 1, color),
+        zIndexOffset: zOffset,
+      })
+        .addTo(map)
+        .bindPopup(`
+          <div class="popup-title">🏥 ${c.nombre}</div>
+          <div class="popup-row"><span class="clinic-badge ${badgeInfo.css}">${badgeInfo.label}</span></div>
+          <div class="popup-row">📍 ${c.direccion}, ${c.distrito}</div>
+          <div class="popup-row">📞 ${c.telefono}</div>
+          <div class="popup-row" style="font-weight:700;color:#059669">${c.distancia.toFixed(2)} km del accidente</div>
+        `);
+      clinicaMarkers.push(m);
+    });
+  };
+
+  addGroup(recomendadas, '#d97706', 950); // dorado, encima
+  addGroup(cercanas,     '#1e40af', 900); // azul
 }
 
 function clearClinicMarkers() {
@@ -526,9 +532,12 @@ function hideResults() {
 /** Vuela al marcador de la clínica al hacer clic en el resultado */
 function flyToClinic(lat, lng) {
   map.flyTo([lat, lng], 16, { animate: true, duration: 1 });
-  clinicaMarkers.forEach(m => {
-    if (Math.abs(m.getLatLng().lat - lat) < 0.0001) m.openPopup();
-  });
+  // Busca el marcador por lat Y lng para no abrir el popup equivocado
+  const match = clinicaMarkers.find(m =>
+    Math.abs(m.getLatLng().lat - lat) < 0.0001 &&
+    Math.abs(m.getLatLng().lng - lng) < 0.0001
+  );
+  if (match) match.openPopup();
 }
 
 // ─── UI helpers ───────────────────────────────────────────────────────────────
