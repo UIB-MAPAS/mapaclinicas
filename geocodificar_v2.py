@@ -16,10 +16,9 @@ MODOS DE USO:
   b) Importar Excel y geocodificar desde cero:
        python geocodificar_v2.py import CLINICAS_CSV.xlsx
 
-  c) Re-geocodificar desde SUNAT (dirección oficial por RUC) — RECOMENDADO:
-       python geocodificar_v2.py ruc --sunat-key TOKEN
-       python geocodificar_v2.py ruc --sunat-key TOKEN --opencage-key KEY
-       python geocodificar_v2.py ruc --sunat-key TOKEN --all   (todas las filas)
+  c) Re-geocodificar desde SUNAT + Google Maps (máxima precisión) — RECOMENDADO:
+       python geocodificar_v2.py ruc --sunat-key TOKEN --googlemaps-key KEY
+       python geocodificar_v2.py ruc --sunat-key TOKEN --googlemaps-key KEY --all
 
   d) Solo consultar SUNAT para obtener direcciones limpias (no geocodifica):
        python geocodificar_v2.py sunat
@@ -28,6 +27,8 @@ MODOS DE USO:
        python geocodificar_v2.py prompt
 
 FLAGS OPCIONALES (añadir a cualquier modo):
+  --googlemaps-key KEY  API key de Google Maps Geocoding (la más precisa — requiere tarjeta,
+                        pero $200/mes gratis = 40 000 geocodificaciones sin costo real)
   --opencage-key  KEY   API key de OpenCage   (opencagedata.com — gratis 2500/día, solo email)
   --geoapify-key  KEY   API key de Geoapify   (geoapify.com — gratis 3000/día, solo email)
   --sunat-key     KEY   Token de apis.net.pe  (apis.net.pe — gratis, solo email)
@@ -180,8 +181,43 @@ def es_preciso(nominatim_result):
     typ = nominatim_result.get('type', '')
     return (cls, typ) not in _IMPRECISOS
 
-def geocode(query, opencage_key=None, geoapify_key=None):
-    """Intenta geocodificar en orden de calidad."""
+def geocode_googlemaps(query, api_key, require_precise=True):
+    """
+    Google Maps Geocoding API — máxima precisión para Perú.
+    require_precise=True rechaza resultados APPROXIMATE (solo acepta ROOFTOP o RANGE_INTERPOLATED).
+    Costo: $5/1000 reqs (primer $200/mes gratis = ~40 000 reqs gratuitas/mes).
+    Obtener key: console.cloud.google.com → Geocoding API → Credentials.
+    """
+    url = 'https://maps.googleapis.com/maps/api/geocode/json'
+    params = dict(address=query, key=api_key, region='pe', language='es')
+    try:
+        r = requests.get(url, params=params, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        results = data.get('results', [])
+        if not results:
+            return None, None, None
+        res = results[0]
+        loc_type = res.get('geometry', {}).get('location_type', '')
+        lat = res['geometry']['location']['lat']
+        lng = res['geometry']['location']['lng']
+        if require_precise and loc_type == 'APPROXIMATE':
+            print(f"    [Google] resultado APPROXIMATE, descartado: {res.get('formatted_address','')}")
+            return None, None, loc_type
+        print(f"    [Google] {loc_type} → {res.get('formatted_address','')}")
+        return lat, lng, loc_type
+    except Exception as e:
+        print(f"    [Google error] {e}")
+    return None, None, None
+
+
+def geocode(query, opencage_key=None, geoapify_key=None, googlemaps_key=None):
+    """Intenta geocodificar en orden de calidad: Google Maps > OpenCage > Geoapify > Nominatim."""
+    if googlemaps_key:
+        lat, lng, _ = geocode_googlemaps(query, googlemaps_key)
+        delay()
+        if lat and in_peru(lat, lng):
+            return lat, lng
     if opencage_key:
         lat, lng = geocode_opencage(query, opencage_key)
         delay()
@@ -267,7 +303,7 @@ def build_queries(nombre, direccion, distrito, sunat_data=None, zona=''):
 # ── Geocodificación con múltiples intentos ────────────────────────────────────
 
 def geocode_one(nombre, ruc, direccion, distrito, zona='',
-                sunat_key=None, opencage_key=None, geoapify_key=None):
+                sunat_key=None, opencage_key=None, geoapify_key=None, googlemaps_key=None):
     """Intenta todas las estrategias hasta conseguir coordenadas válidas."""
     sunat_data = None
     if sunat_key and ruc:
@@ -281,7 +317,7 @@ def geocode_one(nombre, ruc, direccion, distrito, zona='',
 
     for q in queries:
         print(f"    Geocodificando: {q}")
-        lat, lng = geocode(q, opencage_key, geoapify_key)
+        lat, lng = geocode(q, opencage_key, geoapify_key, googlemaps_key)
         if lat:
             print(f"    OK {lat:.6f}, {lng:.6f}")
             return lat, lng, sunat_data
@@ -292,7 +328,7 @@ def geocode_one(nombre, ruc, direccion, distrito, zona='',
 
 # ── Comando: fix (re-geocodifica erróneos) ───────────────────────────────────
 
-def cmd_fix(sunat_key=None, opencage_key=None, geoapify_key=None):
+def cmd_fix(sunat_key=None, opencage_key=None, geoapify_key=None, googlemaps_key=None):
     """Re-geocodifica filas con coordenadas ausentes o fuera de Perú."""
     rows = []
     with open(INPUT_CSV, newline='', encoding='utf-8') as f:
@@ -333,6 +369,7 @@ def cmd_fix(sunat_key=None, opencage_key=None, geoapify_key=None):
             sunat_key=sunat_key,
             opencage_key=opencage_key,
             geoapify_key=geoapify_key,
+            googlemaps_key=googlemaps_key,
         )
         if lat:
             row['Lat'] = f"{lat:.6f}"
@@ -353,7 +390,7 @@ def cmd_fix(sunat_key=None, opencage_key=None, geoapify_key=None):
 
 # ── Comando: import (desde Excel) ─────────────────────────────────────────────
 
-def cmd_import(excel_path, sunat_key=None, opencage_key=None, geoapify_key=None):
+def cmd_import(excel_path, sunat_key=None, opencage_key=None, geoapify_key=None, googlemaps_key=None):
     """
     Importa el Excel de clínicas MAPFRE y genera clinicas_import.csv geocodificado.
 
@@ -408,6 +445,7 @@ def cmd_import(excel_path, sunat_key=None, opencage_key=None, geoapify_key=None)
         lat, lng, sunat = geocode_one(
             nombre=nombre, ruc=ruc, direccion=direccion, distrito=distrito, zona=zona,
             sunat_key=sunat_key, opencage_key=opencage_key, geoapify_key=geoapify_key,
+            googlemaps_key=googlemaps_key,
         )
 
         # Si SUNAT devolvió una dirección más limpia, usarla
@@ -534,7 +572,7 @@ def cmd_prompt():
 
 # ── Comando: ruc (re-geocodifica usando dirección oficial SUNAT) ──────────────
 
-def cmd_ruc(sunat_key, opencage_key=None, geoapify_key=None, do_all=False):
+def cmd_ruc(sunat_key, opencage_key=None, geoapify_key=None, do_all=False, googlemaps_key=None):
     """
     Re-geocodifica clínicas usando la dirección oficial de SUNAT por RUC.
 
@@ -599,6 +637,7 @@ def cmd_ruc(sunat_key, opencage_key=None, geoapify_key=None, do_all=False):
         lat, lng, sunat_data = geocode_one(
             nombre=nombre, ruc=ruc, direccion=direccion, distrito=distrito, zona=zona,
             sunat_key=sunat_key, opencage_key=opencage_key, geoapify_key=geoapify_key,
+            googlemaps_key=googlemaps_key,
         )
 
         if lat:
@@ -741,18 +780,20 @@ def parse_args():
 
 if __name__ == '__main__':
     positional, flags = parse_args()
-    sunat_key    = flags.get('sunat_key')
-    opencage_key = flags.get('opencage_key')
-    geoapify_key = flags.get('geoapify_key')
+    sunat_key      = flags.get('sunat_key')
+    opencage_key   = flags.get('opencage_key')
+    geoapify_key   = flags.get('geoapify_key')
+    googlemaps_key = flags.get('googlemaps_key')
 
     cmd = positional[0] if positional else 'fix'
 
     print(f"\n{'='*60}")
     print(f"  Geocodificador de Clínicas — modo: {cmd}")
     apis = []
-    if sunat_key:    apis.append('SUNAT(apis.net.pe)')
-    if opencage_key: apis.append('OpenCage')
-    if geoapify_key: apis.append('Geoapify')
+    if sunat_key:      apis.append('SUNAT(apis.net.pe)')
+    if googlemaps_key: apis.append('GoogleMaps')
+    if opencage_key:   apis.append('OpenCage')
+    if geoapify_key:   apis.append('Geoapify')
     apis.append('Nominatim(fallback)')
     print(f"  APIs activas: {' → '.join(apis)}")
     print(f"{'='*60}\n")
@@ -760,11 +801,11 @@ if __name__ == '__main__':
     do_all = '--all' in sys.argv
 
     if cmd == 'fix':
-        cmd_fix(sunat_key, opencage_key, geoapify_key)
+        cmd_fix(sunat_key, opencage_key, geoapify_key, googlemaps_key)
     elif cmd == 'ruc':
-        cmd_ruc(sunat_key, opencage_key, geoapify_key, do_all=do_all)
+        cmd_ruc(sunat_key, opencage_key, geoapify_key, do_all=do_all, googlemaps_key=googlemaps_key)
     elif cmd == 'import' and len(positional) >= 2:
-        cmd_import(positional[1], sunat_key, opencage_key, geoapify_key)
+        cmd_import(positional[1], sunat_key, opencage_key, geoapify_key, googlemaps_key)
     elif cmd == 'sunat':
         cmd_sunat(sunat_key)
     elif cmd == 'prompt':
