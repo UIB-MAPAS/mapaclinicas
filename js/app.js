@@ -25,6 +25,7 @@ const AASS_COLORS = {
   'PAOLA MIJA':         '#f39c12', // amarillo
   'MARIAELENA QUIROZ':  '#2c3e50', // negro
   'GABRIELA VARIAS':    '#e91e8c', // rosado
+  'ERENI VALDIVIA':     '#16a085', // verde azulado
 };
 
 const AASS_LABELS = {
@@ -35,6 +36,7 @@ const AASS_LABELS = {
   'PAOLA MIJA':         'Paola Mija',
   'MARIAELENA QUIROZ':  'Mariaelena Quiroz',
   'GABRIELA VARIAS':    'Gabriela Varias',
+  'ERENI VALDIVIA':     'Ereni Valdivia',
 };
 
 // ─── Estado global ───────────────────────────────────────────────────────────
@@ -54,7 +56,7 @@ window.addEventListener('DOMContentLoaded', () => {
     .then(([localesRaw, clinicasRaw]) => {
       localesData  = parseLocales(localesRaw);
       clinicasData = parseClinicas(clinicasRaw);
-      geocodeAllLocales();
+      setupMarkers();
     })
     .catch(err => {
       console.error(err);
@@ -88,6 +90,29 @@ function loadCSV(path) {
   });
 }
 
+// ─── Mapeo tipo accidente → tipos de clínica compatibles ─────────────────────
+const ACCIDENTE_TIPOS = {
+  'quemadura':     { label: 'Quemadura',                  emoji: '🔥', prioridad: ['CLINICA_QUEMADURA'],  compatibles: ['CLINICA_QUEMADURA', 'CLINICA_GENERAL', 'AMD'] },
+  'corte':         { label: 'Corte / Herida',             emoji: '🩹', prioridad: ['CLINICA_GENERAL'],    compatibles: ['CLINICA_GENERAL', 'CLINICA_QUEMADURA', 'AMD'] },
+  'fractura':      { label: 'Fractura / Golpe',           emoji: '🦴', prioridad: ['CLINICA_GENERAL'],    compatibles: ['CLINICA_GENERAL', 'MED_FISIOTERAPIA', 'AMD'] },
+  'traumatismo':   { label: 'Traumatismo',                emoji: '⚠️', prioridad: ['CLINICA_GENERAL'],    compatibles: ['CLINICA_GENERAL', 'AMD'] },
+  'rehabilitacion':{ label: 'Rehabilitación / Fisioterapia', emoji: '💪', prioridad: ['MED_FISIOTERAPIA'],compatibles: ['MED_FISIOTERAPIA', 'CLINICA_GENERAL'] },
+  'diagnostico':   { label: 'Diagnóstico / Imágenes',     emoji: '🔬', prioridad: ['APOYO_DX'],           compatibles: ['APOYO_DX', 'CLINICA_GENERAL'] },
+  'dental':        { label: 'Dental',                     emoji: '🦷', prioridad: ['ODONTOLOGIA'],         compatibles: ['ODONTOLOGIA', 'CLINICA_GENERAL'] },
+  'ocular':        { label: 'Ocular / Oftalmología',      emoji: '👁',  prioridad: ['OFTALMOLOGIA'],        compatibles: ['OFTALMOLOGIA', 'CLINICA_GENERAL'] },
+  'otro':          { label: 'Otro / General',             emoji: '🏥', prioridad: ['CLINICA_GENERAL'],    compatibles: ['CLINICA_GENERAL', 'CLINICA_QUEMADURA', 'MED_FISIOTERAPIA', 'APOYO_DX', 'ODONTOLOGIA', 'AMD', 'OFTALMOLOGIA'] },
+};
+
+const TIPO_BADGE = {
+  'CLINICA_QUEMADURA': { css: 'badge-quemadura', label: 'Quemaduras' },
+  'CLINICA_GENERAL':   { css: 'badge-general',   label: 'Clínica general' },
+  'MED_FISIOTERAPIA':  { css: 'badge-rehab',      label: 'Rehabilitación' },
+  'APOYO_DX':          { css: 'badge-dx',         label: 'Diagnóstico' },
+  'ODONTOLOGIA':       { css: 'badge-odonto',     label: 'Odontología' },
+  'AMD':               { css: 'badge-amd',         label: 'Atención médica domiciliaria' },
+  'OFTALMOLOGIA':      { css: 'badge-oftalmo',    label: 'Oftalmología' },
+};
+
 // ─── Parseo de locales ───────────────────────────────────────────────────────
 function parseLocales(rows) {
   return rows.map(r => ({
@@ -106,6 +131,7 @@ function parseLocales(rows) {
 function parseClinicas(rows) {
   return rows.map(r => ({
     nombre:    trim(r['Nombre']),
+    tipo:      trim(r['Tipo']) || 'CLINICA_GENERAL',
     direccion: trim(r['Direccion']),
     distrito:  trim(r['Distrito']),
     telefono:  trim(r['Telefono']),
@@ -170,55 +196,25 @@ async function geocodeAddress(query) {
 function delay(ms) { return new Promise(res => setTimeout(res, ms)); }
 
 /**
- * Geocodifica todos los locales y clínicas, luego agrega marcadores al mapa.
+ * Agrega todos los marcadores al mapa desde los datos ya pre-geocodificados en el CSV.
+ * No hace llamadas a Nominatim — todo viene del CSV.
+ * Locales sin Lat/Lng (imprecisos) simplemente no se muestran.
  */
-async function geocodeAllLocales() {
-  setLoading('Geocodificando locales…', '');
+function setupMarkers() {
+  const localesCon    = localesData.filter(l => l.lat && l.lng).length;
+  const localesSin    = localesData.length - localesCon;
+  const clinicasCon   = clinicasData.filter(c => c.lat && c.lng).length;
 
-  const allItems = [
-    ...localesData.map((l, i) => ({ type: 'locale', index: i, item: l, query: buildLocaleQuery(l) })),
-    ...clinicasData.map((c, i) => ({ type: 'clinica', index: i, item: c, query: buildClinicaQuery(c) })),
-  ];
-
-  // Separa los que ya tienen coordenadas (en el CSV o en caché)
-  const toGeocode = allItems.filter(({ item, query }) => {
-    if (item.lat && item.lng) return false;          // ya tiene coords en CSV
-    if (geocodeCache[query]) {                       // en caché
-      Object.assign(item, geocodeCache[query]);
-      return false;
-    }
-    return true;
-  });
-
-  // Copia las coords del CSV
-  allItems.forEach(({ item, query }) => {
-    if (!item.lat && geocodeCache[query]) {
-      Object.assign(item, geocodeCache[query]);
-    }
-  });
-
-  const total = toGeocode.length;
-  let done = 0;
-
-  for (const { type, index, item, query } of toGeocode) {
-    done++;
-    setLoading(
-      `Geocodificando ${type === 'locale' ? 'locales' : 'clínicas'}…`,
-      `${done} / ${total} · ${item.referencia || item.nombre || ''}`
-    );
-
-    const coords = await geocodeAddress(query);
-    if (coords) Object.assign(item, coords);
-
-    if (done < total) await delay(CONFIG.geocodeDelay);
-  }
-
-  // Agregar marcadores
   localesData.forEach(addLocaleMarker);
   buildLegend();
   hideLoading();
-  setStatus(`${localesData.filter(l => l.lat).length} locales y ${clinicasData.filter(c => c.lat).length} clínicas cargadas.`, 'success');
-  setTimeout(clearStatus, 4000);
+
+  const msgLocales = localesSin > 0
+    ? `${localesCon} locales visibles (${localesSin} sin ubicación precisa omitidos)`
+    : `${localesCon} locales`;
+
+  setStatus(`${msgLocales} · ${clinicasCon} clínicas listas.`, 'success');
+  setTimeout(clearStatus, 5000);
 }
 
 // ─── Marcadores de locales ───────────────────────────────────────────────────
@@ -242,13 +238,13 @@ function createPinIcon(color) {
   });
 }
 
-/** Icono para clínicas cercanas (cuadrado azul numerado) */
-function createClinicIcon(rank) {
+/** Icono para clínicas cercanas (cuadrado numerado, color configurable) */
+function createClinicIcon(rank, color = '#1e40af') {
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="30" height="36" viewBox="0 0 30 36">
-    <rect x="1" y="1" width="28" height="28" rx="6" fill="#1e40af" stroke="#fff" stroke-width="2"/>
+    <rect x="1" y="1" width="28" height="28" rx="6" fill="${color}" stroke="#fff" stroke-width="2"/>
     <text x="15" y="21" text-anchor="middle" fill="#fff" font-size="15" font-weight="bold"
       font-family="system-ui,sans-serif">${rank}</text>
-    <polygon points="15,35 9,28 21,28" fill="#1e40af"/>
+    <polygon points="15,35 9,28 21,28" fill="${color}"/>
   </svg>`;
   return L.divIcon({
     className: '',
@@ -327,46 +323,56 @@ function toggleLocales(visible) {
 
 // ─── Búsqueda de accidente ────────────────────────────────────────────────────
 async function searchAccident() {
-  const input = document.getElementById('search-input').value.trim();
+  const input        = document.getElementById('search-input').value.trim();
+  const accidenteTipo = document.getElementById('accident-type').value;
+
   if (!input) {
-    setStatus('Por favor ingresa una dirección.', 'error');
+    setStatus('Por favor ingresa el lugar del accidente.', 'error');
     return;
   }
 
   const btn = document.getElementById('btn-search');
   btn.disabled = true;
-  setStatus('Buscando dirección…');
+  setStatus('Buscando ubicación…');
   clearClinicMarkers();
   hideResults();
 
-  const query = `${input}, ${CONFIG.country}`;
+  const query = `${input}, Lima, ${CONFIG.country}`;
   const coords = await geocodeAddress(query);
 
   if (!coords) {
-    setStatus('No se encontró la dirección. Intenta ser más específico.', 'error');
-    btn.disabled = false;
-    return;
+    // Retry without "Lima"
+    const coords2 = await geocodeAddress(`${input}, ${CONFIG.country}`);
+    if (!coords2) {
+      setStatus('No se encontró el lugar. Intenta agregar el distrito: "KFC Miraflores" o la dirección exacta.', 'error');
+      btn.disabled = false;
+      return;
+    }
+    Object.assign(coords, coords2);
   }
 
   // Marcador del accidente
   if (accidentMarker) map.removeLayer(accidentMarker);
+  const tipoLabel = accidenteTipo && ACCIDENTE_TIPOS[accidenteTipo]
+    ? ` · ${ACCIDENTE_TIPOS[accidenteTipo].emoji} ${ACCIDENTE_TIPOS[accidenteTipo].label}`
+    : '';
   accidentMarker = L.marker([coords.lat, coords.lng], { icon: createAccidentIcon(), zIndexOffset: 1000 })
     .addTo(map)
-    .bindPopup(`<b>⚠ Accidente</b><br><span style="font-size:12px">${input}</span>`)
+    .bindPopup(`<b>⚠ Accidente</b><br><span style="font-size:12px">${input}${tipoLabel}</span>`)
     .openPopup();
 
   map.setView([coords.lat, coords.lng], 14, { animate: true });
 
-  // Calcular clínicas más cercanas
+  // Calcular clínicas
   if (!clinicasData.some(c => c.lat)) {
-    setStatus('No hay clínicas geocodificadas aún. Espera o recarga la página.', 'error');
+    setStatus('No hay clínicas geocodificadas. Recarga la página.', 'error');
     btn.disabled = false;
     return;
   }
 
-  const nearest = findNearestClinics(coords.lat, coords.lng);
-  displayNearestClinics(nearest, input);
-  addClinicMarkers(nearest);
+  const { recomendadas, cercanas } = findNearestClinics(coords.lat, coords.lng, accidenteTipo);
+  displayNearestClinics(recomendadas, cercanas, input, accidenteTipo);
+  addClinicMarkers(recomendadas, cercanas);
 
   btn.disabled = false;
   clearStatus();
@@ -384,21 +390,51 @@ function haversine(lat1, lon1, lat2, lon2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-function findNearestClinics(lat, lng) {
-  return clinicasData
+/**
+ * Retorna { recomendadas, cercanas }
+ * - recomendadas: top 3 clínicas que coinciden con el tipo prioritario del accidente
+ * - cercanas:     top 5 clínicas compatibles (excluye las recomendadas)
+ * Si no hay tipo de accidente, recomendadas=[], cercanas=top 5 todas.
+ */
+function findNearestClinics(lat, lng, accidenteTipo) {
+  const withDist = clinicasData
     .filter(c => c.lat && c.lng)
     .map(c => ({ ...c, distancia: haversine(lat, lng, c.lat, c.lng) }))
-    .sort((a, b) => a.distancia - b.distancia)
+    .sort((a, b) => a.distancia - b.distancia);
+
+  if (!accidenteTipo || !ACCIDENTE_TIPOS[accidenteTipo]) {
+    return { recomendadas: [], cercanas: withDist.slice(0, CONFIG.maxClinics) };
+  }
+
+  const { prioridad, compatibles } = ACCIDENTE_TIPOS[accidenteTipo];
+
+  // Recomendadas: tipo prioritario (max 3)
+  const recomendadas = withDist
+    .filter(c => prioridad.includes(c.tipo))
+    .slice(0, 3);
+
+  const recomIds = new Set(recomendadas.map(c => c.nombre + c.direccion));
+
+  // Cercanas: tipos compatibles, sin duplicar recomendadas (max 5)
+  const cercanas = withDist
+    .filter(c => compatibles.includes(c.tipo) && !recomIds.has(c.nombre + c.direccion))
     .slice(0, CONFIG.maxClinics);
+
+  return { recomendadas, cercanas };
 }
 
 // ─── Marcadores de clínicas ───────────────────────────────────────────────────
-function addClinicMarkers(clinics) {
-  clinics.forEach((c, i) => {
-    const m = L.marker([c.lat, c.lng], { icon: createClinicIcon(i + 1), zIndexOffset: 900 })
+function addClinicMarkers(recomendadas, cercanas) {
+  const allClinics = [...(recomendadas || []), ...(cercanas || [])];
+  allClinics.forEach((c, i) => {
+    const isRecomendada = (recomendadas || []).includes(c);
+    const icon = isRecomendada ? createClinicIcon(i + 1, '#d97706') : createClinicIcon(i + 1, '#1e40af');
+    const badgeInfo = TIPO_BADGE[c.tipo] || TIPO_BADGE['CLINICA_GENERAL'];
+    const m = L.marker([c.lat, c.lng], { icon, zIndexOffset: isRecomendada ? 950 : 900 })
       .addTo(map)
       .bindPopup(`
         <div class="popup-title">🏥 ${c.nombre}</div>
+        <div class="popup-row"><span class="clinic-badge ${badgeInfo.css}">${badgeInfo.label}</span></div>
         <div class="popup-row">📍 ${c.direccion}, ${c.distrito}</div>
         <div class="popup-row">📞 ${c.telefono}</div>
         <div class="popup-row" style="font-weight:700;color:#059669">${c.distancia.toFixed(2)} km del accidente</div>
@@ -413,19 +449,17 @@ function clearClinicMarkers() {
 }
 
 // ─── Mostrar resultados ───────────────────────────────────────────────────────
-function displayNearestClinics(clinics, addressLabel) {
-  const container = document.getElementById('results-container');
-  const info      = document.getElementById('accident-info');
-  const list      = document.getElementById('clinics-list');
-
-  info.innerHTML = `<strong>⚠ Accidente reportado en:</strong>${addressLabel}`;
-
-  list.innerHTML = clinics.map((c, i) => `
-    <div class="clinic-item" onclick="flyToClinic(${c.lat}, ${c.lng})">
+function clinicHTML(c, rank, isRecomendada) {
+  const badgeInfo = TIPO_BADGE[c.tipo] || TIPO_BADGE['CLINICA_GENERAL'];
+  return `
+    <div class="clinic-item${isRecomendada ? ' recommended-item' : ''}" onclick="flyToClinic(${c.lat}, ${c.lng})">
       <div class="clinic-header">
-        <span class="clinic-rank">${i + 1}</span>
+        <span class="clinic-rank">${rank}</span>
         <span class="clinic-name">${c.nombre}</span>
         <span class="clinic-distance">${c.distancia.toFixed(2)} km</span>
+      </div>
+      <div style="margin-bottom:4px">
+        <span class="clinic-badge ${badgeInfo.css}">${badgeInfo.label}</span>
       </div>
       <div class="clinic-detail">📍 ${c.direccion}, ${c.distrito}</div>
       <div class="clinic-phone">📞 ${c.telefono}</div>
@@ -435,11 +469,40 @@ function displayNearestClinics(clinics, addressLabel) {
         🗺 Abrir en Google Maps
       </a>
     </div>
-  `).join('');
+  `;
+}
+
+function displayNearestClinics(recomendadas, cercanas, addressLabel, accidenteTipo) {
+  const container = document.getElementById('results-container');
+  const info      = document.getElementById('accident-info');
+
+  const tipoInfo  = accidenteTipo && ACCIDENTE_TIPOS[accidenteTipo];
+  const tipoLabel = tipoInfo ? ` · ${tipoInfo.emoji} ${tipoInfo.label}` : '';
+
+  info.innerHTML = `<strong>⚠ Accidente reportado en:</strong>${addressLabel}${tipoLabel}`;
+
+  // Sección recomendadas
+  const recSection = document.getElementById('recommended-section');
+  const recTitle   = document.getElementById('recommended-title');
+  const recList    = document.getElementById('recommended-list');
+
+  if (tipoInfo && recomendadas.length > 0) {
+    recTitle.textContent = `Recomendadas para ${tipoInfo.emoji} ${tipoInfo.label}`;
+    recList.innerHTML    = recomendadas.map((c, i) => clinicHTML(c, i + 1, true)).join('');
+    recSection.style.display = 'block';
+  } else {
+    recSection.style.display = 'none';
+  }
+
+  // Sección cercanas
+  const nearbyTitle = document.getElementById('nearby-title');
+  const clinicsList = document.getElementById('clinics-list');
+  nearbyTitle.textContent = tipoInfo && recomendadas.length > 0
+    ? 'Otras clínicas compatibles'
+    : 'Clínicas más cercanas';
+  clinicsList.innerHTML   = cercanas.map((c, i) => clinicHTML(c, i + 1, false)).join('');
 
   container.classList.add('show');
-
-  // Scroll al primer resultado
   container.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 

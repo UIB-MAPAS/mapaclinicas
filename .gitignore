@@ -1,0 +1,22 @@
+# Archivos temporales de Excel
+~$*.xlsx
+~$*.xls
+
+# Archivos fuente (datos sensibles, no van al repo público)
+clinicas.xlsx
+sucursales.xlsx
+respuesta_chatgpt.txt
+geocode_prompt.txt
+
+# Backups generados por el script
+data/*_backup.csv
+data/*_pre_patch.csv
+data/*_import.csv
+
+# Claude
+.claude/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo

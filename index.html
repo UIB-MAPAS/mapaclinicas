@@ -150,6 +150,30 @@
     #loading-text { font-size: 13px; color: #6b7280; }
     #loading-progress { font-size: 11px; color: #9ca3af; }
 
+    /* ─── Accident type selector ────────────────────────────────────────── */
+    .accident-type-row {
+      margin-top: 8px;
+    }
+    .accident-type-label {
+      font-size: 11px;
+      color: #6b7280;
+      margin-bottom: 4px;
+      display: block;
+    }
+    #accident-type {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      font-size: 13px;
+      background: #fff;
+      color: #1a1a2e;
+      outline: none;
+      cursor: pointer;
+      transition: border-color .2s;
+    }
+    #accident-type:focus { border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,.12); }
+
     /* ─── Results ───────────────────────────────────────────────────────── */
     #results-container { display: none; }
     #results-container.show { display: block; }
@@ -165,6 +189,33 @@
     }
     .accident-info strong { display: block; font-size: 13px; margin-bottom: 2px; }
 
+    .results-section-title {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+      color: #6b7280;
+      margin: 10px 0 6px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .results-section-title.recommended { color: #b45309; }
+    .results-section-title.recommended::before {
+      content: '';
+      display: inline-block;
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: #f59e0b;
+    }
+    .results-section-title.nearby::before {
+      content: '';
+      display: inline-block;
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: #1e40af;
+    }
+
     .clinic-item {
       background: #fff;
       border: 1px solid #e4e7ed;
@@ -175,6 +226,26 @@
       cursor: pointer;
     }
     .clinic-item:hover { box-shadow: 0 4px 12px rgba(0,0,0,.08); border-color: #93c5fd; }
+    .clinic-item.recommended-item { border-color: #fcd34d; background: #fffbeb; }
+    .clinic-item.recommended-item:hover { border-color: #f59e0b; }
+
+    .clinic-badge {
+      display: inline-block;
+      font-size: 10px;
+      font-weight: 700;
+      padding: 1px 6px;
+      border-radius: 8px;
+      margin-left: 6px;
+      vertical-align: middle;
+    }
+    .badge-quemadura { background: #fef3c7; color: #92400e; }
+    .badge-general   { background: #e0f2fe; color: #0369a1; }
+    .badge-rehab     { background: #f0fdf4; color: #166534; }
+    .badge-dx        { background: #f5f3ff; color: #5b21b6; }
+    .badge-odonto    { background: #fdf2f8; color: #831843; }
+    .badge-amd       { background: #fff7ed; color: #9a3412; }
+    .badge-oftalmo   { background: #ecfeff; color: #164e63; }
+
     .clinic-rank {
       display: inline-flex;
       align-items: center;
@@ -188,6 +259,7 @@
       margin-right: 8px;
       flex-shrink: 0;
     }
+    .clinic-item.recommended-item .clinic-rank { background: #d97706; }
     .clinic-header { display: flex; align-items: center; margin-bottom: 6px; }
     .clinic-name { font-weight: 600; font-size: 13px; flex: 1; }
     .clinic-distance {
@@ -316,9 +388,24 @@
       <input
         id="search-input"
         type="text"
-        placeholder="Ej: Av. Javier Prado Este 2465, San Isidro"
+        placeholder="Ej: KFC Real Plaza Pro, Independencia"
         autocomplete="off"
       />
+      <div class="accident-type-row">
+        <label class="accident-type-label" for="accident-type">Tipo de accidente (opcional)</label>
+        <select id="accident-type">
+          <option value="">— Sin filtro (mostrar todas) —</option>
+          <option value="quemadura">🔥 Quemadura</option>
+          <option value="corte">🩹 Corte / Herida</option>
+          <option value="fractura">🦴 Fractura / Golpe</option>
+          <option value="traumatismo">⚠️ Traumatismo</option>
+          <option value="rehabilitacion">💪 Rehabilitación / Fisioterapia</option>
+          <option value="diagnostico">🔬 Diagnóstico / Imágenes</option>
+          <option value="dental">🦷 Dental</option>
+          <option value="ocular">👁 Ocular / Oftalmología</option>
+          <option value="otro">🏥 Otro / General</option>
+        </select>
+      </div>
       <button id="btn-search" onclick="searchAccident()">
         Buscar clínicas cercanas
       </button>
@@ -329,12 +416,15 @@
 
     <!-- Results -->
     <div id="results-container">
-      <div class="card-title" style="padding:0 2px 6px">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#6b7280" stroke-width="2.5"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
-        Clínicas más cercanas
-      </div>
       <div id="accident-info" class="accident-info"></div>
-      <div id="clinics-list"></div>
+      <div id="recommended-section" style="display:none">
+        <div class="results-section-title recommended" id="recommended-title"></div>
+        <div id="recommended-list"></div>
+      </div>
+      <div id="nearby-section">
+        <div class="results-section-title nearby" id="nearby-title">Más cercanas</div>
+        <div id="clinics-list"></div>
+      </div>
     </div>
 
     <!-- Controles -->
