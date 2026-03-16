@@ -81,16 +81,33 @@ def in_peru(lat, lng):
 
 def clean_address(addr, distrito=''):
     """Normaliza una dirección peruana para mejorar geocoding."""
+    # Expandir abreviaturas — captura el espacio/punto opcional que sigue para no fusionar palabras
+    addr = re.sub(r'\bAv\.?\s*', 'Avenida ', addr, flags=re.IGNORECASE)
+    addr = re.sub(r'\bCl\.?\s*', 'Calle ', addr, flags=re.IGNORECASE)
+    addr = re.sub(r'\bJr\.?\s*', 'Jirón ', addr, flags=re.IGNORECASE)
+    addr = re.sub(r'\bUrb\.?\s*', 'Urbanización ', addr, flags=re.IGNORECASE)
     addr = re.sub(r'\bN[°º]?\s*', 'N° ', addr, flags=re.IGNORECASE)
+    # Colapsar espacios dobles generados por las expansiones
     addr = re.sub(r'\s+', ' ', addr).strip()
-    # Expandir abreviaturas comunes
-    addr = re.sub(r'\bAv\.?\b', 'Avenida', addr, flags=re.IGNORECASE)
-    addr = re.sub(r'\bCl\.?\b', 'Calle', addr, flags=re.IGNORECASE)
-    addr = re.sub(r'\bJr\.?\b', 'Jirón', addr, flags=re.IGNORECASE)
-    addr = re.sub(r'\bUrb\.?\b', 'Urbanización', addr, flags=re.IGNORECASE)
     if distrito and distrito.upper() not in addr.upper():
         addr = f"{addr}, {distrito}"
     return addr
+
+def strip_via_prefix(addr):
+    """
+    Elimina el prefijo de tipo de vía (Av., Jr., Cl., Avenida, Jirón, Calle, etc.)
+    para generar una query sin tipo de vía — útil cuando el tipo en el CSV es incorrecto.
+    Ej: 'Av.Las Gaviotas N 207' → 'Las Gaviotas 207'
+    Ej: 'Jr.Huallaga N 200'    → 'Huallaga 200'
+    """
+    # \s* al final para manejar tanto 'Av. Las' (con espacio) como 'Av.Las' (sin espacio)
+    addr = re.sub(
+        r'^\s*(Avenida|Jirón|Jiron|Calle|Pasaje|Paseo|Urbanización|Urbanizacion|'
+        r'Av\.?|Jr\.?|Cl\.?|Ps\.?|Urb\.?)[\s.]*',
+        '', addr, flags=re.IGNORECASE
+    )
+    addr = re.sub(r'\bN[°º]?\s*', '', addr, flags=re.IGNORECASE)
+    return re.sub(r'\s+', ' ', addr).strip()
 
 def delay(is_nominatim=False):
     time.sleep(DELAY_NOM if is_nominatim else DELAY_API)
@@ -98,8 +115,11 @@ def delay(is_nominatim=False):
 
 # ── Backends de geocoding ─────────────────────────────────────────────────────
 
-def geocode_opencage(query, api_key):
-    """OpenCage Geocoding API — gratis 2500/día, solo email, sin tarjeta."""
+def geocode_opencage(query, api_key, min_confidence=6):
+    """OpenCage Geocoding API — gratis 2500/día, solo email, sin tarjeta.
+    min_confidence: 1-10. Rechaza resultados imprecisos (centroide de ciudad/distrito).
+      6 = nivel de calle mínimo aceptable; 8+ = rooftop/edificio.
+    """
     url = 'https://api.opencagedata.com/geocode/v1/json'
     params = dict(q=query, key=api_key, countrycode='pe', language='es',
                   limit=1, no_annotations=1)
@@ -108,7 +128,12 @@ def geocode_opencage(query, api_key):
         r.raise_for_status()
         results = r.json().get('results', [])
         if results:
+            confidence = results[0].get('confidence', 0)
+            if confidence < min_confidence:
+                print(f"    [OpenCage] confianza {confidence} < {min_confidence}, descartado: {results[0].get('formatted','')}")
+                return None, None
             loc = results[0]['geometry']
+            print(f"    [OpenCage] confianza {confidence} -> {results[0].get('formatted','')}")
             return loc['lat'], loc['lng']
     except Exception as e:
         print(f"    [OpenCage error] {e}")
@@ -196,6 +221,7 @@ def geocode_googlemaps(query, api_key, require_precise=True):
         data = r.json()
         results = data.get('results', [])
         if not results:
+            print(f"    [Google] {data.get('status','?')} — sin resultados")
             return None, None, None
         res = results[0]
         loc_type = res.get('geometry', {}).get('location_type', '')
@@ -204,7 +230,7 @@ def geocode_googlemaps(query, api_key, require_precise=True):
         if require_precise and loc_type == 'APPROXIMATE':
             print(f"    [Google] resultado APPROXIMATE, descartado: {res.get('formatted_address','')}")
             return None, None, loc_type
-        print(f"    [Google] {loc_type} → {res.get('formatted_address','')}")
+        print(f"    [Google] {loc_type} -> {res.get('formatted_address','')}")
         return lat, lng, loc_type
     except Exception as e:
         print(f"    [Google error] {e}")
@@ -212,12 +238,27 @@ def geocode_googlemaps(query, api_key, require_precise=True):
 
 
 def geocode(query, opencage_key=None, geoapify_key=None, googlemaps_key=None):
-    """Intenta geocodificar en orden de calidad: Google Maps > OpenCage > Geoapify > Nominatim."""
+    """
+    Intenta geocodificar en orden de calidad:
+      1. Google Maps (ROOFTOP / RANGE_INTERPOLATED / GEOMETRIC_CENTER)
+      2. OpenCage
+      3. Geoapify
+      4. Nominatim
+      5. Google Maps con APPROXIMATE aceptado (último recurso — mejor que nada)
+    """
+    approximate_fallback = None  # guardamos APPROXIMATE por si todo lo demás falla
+
     if googlemaps_key:
-        lat, lng, _ = geocode_googlemaps(query, googlemaps_key)
+        lat, lng, loc_type = geocode_googlemaps(query, googlemaps_key, require_precise=True)
         delay()
         if lat and in_peru(lat, lng):
             return lat, lng
+        # Si fue APPROXIMATE, guardarlo para usarlo como último recurso
+        if loc_type == 'APPROXIMATE':
+            lat2, lng2, _ = geocode_googlemaps(query, googlemaps_key, require_precise=False)
+            if lat2 and in_peru(lat2, lng2):
+                approximate_fallback = (lat2, lng2)
+
     if opencage_key:
         lat, lng = geocode_opencage(query, opencage_key)
         delay()
@@ -232,6 +273,10 @@ def geocode(query, opencage_key=None, geoapify_key=None, googlemaps_key=None):
     lat, lng = geocode_nominatim(query)
     if lat and in_peru(lat, lng):
         return lat, lng
+    # Último recurso: aceptar APPROXIMATE de Google Maps
+    if approximate_fallback:
+        print(f"    [Google APPROXIMATE aceptado como último recurso]")
+        return approximate_fallback
     return None, None
 
 
@@ -257,7 +302,7 @@ def sunat_lookup(ruc, sunat_key):
             distrito  = data.get('distrito', '')
             return {'direccion': direccion, 'distrito': distrito, 'raw': data}
         else:
-            print(f"    [SUNAT] RUC {ruc} → status {r.status_code}")
+            print(f"    [SUNAT] RUC {ruc} -> status {r.status_code}")
     except Exception as e:
         print(f"    [SUNAT error] {e}")
     return None
@@ -270,7 +315,7 @@ ZONA_CIUDAD = {
     'LIMA ESTE':              'Lima',
     'LIMA PROVINCIA':         'Lima',
     'CALLAO':                 'Callao',
-    'CALLAO - LIMA CERCADO':  'Lima',
+    'CALLAO - LIMA CERCADO':  'Callao',
     'LIMA - NO QUEMADURA':    'Lima',
 }
 
@@ -280,22 +325,53 @@ def ciudad_de_zona(zona):
         return 'Lima'
     return ZONA_CIUDAD.get(zona.strip().upper(), zona.strip().title())
 
-def build_queries(nombre, direccion, distrito, sunat_data=None, zona=''):
+def build_queries(nombre, direccion, distrito, sunat_data=None, zona='', is_chain=False):
     """
-    Genera una lista de queries de geocoding de mejor a peor,
-    usando datos SUNAT si están disponibles y la Zona para soporte provincial.
+    Genera una lista de queries de geocoding de mejor a peor.
+
+    is_chain=True  → cadena con varias sucursales (mismo RUC repetido).
+                     Pone la dirección PRIMERO para que Google Maps geocodifique
+                     la sucursal exacta y no la sede principal de la cadena.
+    is_chain=False → clínica única: nombre + dirección juntos al frente.
     """
     ciudad = ciudad_de_zona(zona)
+    addr_clean = clean_address(direccion, distrito)
     queries = []
+
+    if is_chain:
+        # Para cadenas: dirección sola primero (sin nombre para evitar que Google
+        # devuelva la sede principal de la cadena en vez de la sucursal)
+        if addr_clean:
+            queries.append(f"{addr_clean}, {ciudad}, Peru")
+            queries.append(f"{addr_clean}, Peru")
+        # Luego intentar con nombre por si la dirección es muy genérica
+        if nombre and addr_clean:
+            queries.append(f"{nombre}, {addr_clean}, {ciudad}, Peru")
+    else:
+        # Para clínicas únicas: nombre + dirección al frente (máxima precisión)
+        if nombre and addr_clean:
+            queries.append(f"{nombre}, {addr_clean}, {ciudad}, Peru")
+        # Dirección sola como segundo intento
+        if addr_clean:
+            queries.append(f"{addr_clean}, {ciudad}, Peru")
+            queries.append(f"{addr_clean}, Peru")
+
+    # Dirección SUNAT si disponible (aplica a ambos casos)
     if sunat_data:
         d    = sunat_data.get('direccion', '')
         dist = sunat_data.get('distrito', distrito)
         if d:
             queries.append(f"{d}, {dist}, {ciudad}, Peru")
             queries.append(f"{d}, Peru")
-    addr_clean = clean_address(direccion, distrito)
-    queries.append(f"{addr_clean}, {ciudad}, Peru")
-    queries.append(f"{addr_clean}, Peru")
+
+    # Sin prefijo de tipo de vía — útil cuando el tipo en el CSV es incorrecto
+    # (ej: CSV dice "Av.Las Gaviotas" pero la calle real es "Jr. Las Gaviotas")
+    addr_sin_via = strip_via_prefix(direccion)
+    if addr_sin_via and addr_sin_via != direccion.strip():
+        queries.append(f"{addr_sin_via}, {distrito}, {ciudad}, Peru")
+        queries.append(f"{addr_sin_via}, {distrito}, Peru")
+
+    # Último recurso: solo nombre + distrito
     queries.append(f"{nombre}, {distrito}, {ciudad}, Peru")
     return queries
 
@@ -303,7 +379,8 @@ def build_queries(nombre, direccion, distrito, sunat_data=None, zona=''):
 # ── Geocodificación con múltiples intentos ────────────────────────────────────
 
 def geocode_one(nombre, ruc, direccion, distrito, zona='',
-                sunat_key=None, opencage_key=None, geoapify_key=None, googlemaps_key=None):
+                sunat_key=None, opencage_key=None, geoapify_key=None, googlemaps_key=None,
+                is_chain=False):
     """Intenta todas las estrategias hasta conseguir coordenadas válidas."""
     sunat_data = None
     if sunat_key and ruc:
@@ -313,7 +390,9 @@ def geocode_one(nombre, ruc, direccion, distrito, zona='',
             print(f"    SUNAT dir: {sunat_data.get('direccion', '?')}")
         delay()
 
-    queries = build_queries(nombre, direccion, distrito, sunat_data, zona)
+    if is_chain:
+        print(f"    [CADENA] geocodificando por dirección primero (mismo RUC en varias sucursales)")
+    queries = build_queries(nombre, direccion, distrito, sunat_data, zona, is_chain=is_chain)
 
     for q in queries:
         print(f"    Geocodificando: {q}")
@@ -378,14 +457,14 @@ def cmd_fix(sunat_key=None, opencage_key=None, geoapify_key=None, googlemaps_key
 
     backup = INPUT_CSV.replace('.csv', '_backup.csv')
     shutil.copy2(INPUT_CSV, backup)
-    print(f"\nBackup → {backup}")
+    print(f"\nBackup -> {backup}")
 
     with open(OUTPUT_CSV, 'w', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter=';')
         writer.writeheader()
         writer.writerows(rows)
 
-    print(f"✓ {fixed}/{len(bad)} filas re-geocodificadas → {OUTPUT_CSV}")
+    print(f"OK {fixed}/{len(bad)} filas re-geocodificadas -> {OUTPUT_CSV}")
 
 
 # ── Comando: import (desde Excel) ─────────────────────────────────────────────
@@ -472,7 +551,7 @@ def cmd_import(excel_path, sunat_key=None, opencage_key=None, geoapify_key=None,
 
     ok  = sum(1 for r in rows_out if r['Lat'])
     bad = len(rows_out) - ok
-    print(f"\n✓ {ok} con coords · {bad} sin coords → {out_path}")
+    print(f"\nOK {ok} con coords | {bad} sin coords -> {out_path}")
     if bad:
         print("  Las filas sin coords las podés corregir con:")
         print("  python geocodificar_v2.py fix")
@@ -514,7 +593,7 @@ def cmd_sunat(sunat_key):
         writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter=';')
         writer.writeheader()
         writer.writerows(rows)
-    print(f"✓ Guardado en {OUTPUT_CSV}")
+    print(f"OK Guardado en {OUTPUT_CSV}")
 
 
 # ── Comando: prompt (para ChatGPT/Gemini) ─────────────────────────────────────
@@ -538,7 +617,7 @@ def cmd_prompt():
                 bad.append(row)
 
     if not bad:
-        print("✓ Todas las clínicas tienen coordenadas válidas.")
+        print("OK Todas las clinicas tienen coordenadas validas.")
         return
 
     lines = ["Nombre | Dirección completa | Distrito"]
@@ -558,7 +637,7 @@ def cmd_prompt():
     with open('geocode_prompt.txt', 'w', encoding='utf-8') as f:
         f.write(prompt)
 
-    print(f"✓ Prompt generado en geocode_prompt.txt ({len(bad)} clínicas)")
+    print(f"OK Prompt generado en geocode_prompt.txt ({len(bad)} clinicas)")
     print()
     print("Pasos:")
     print("  1. Abrí geocode_prompt.txt y copiá todo el contenido")
@@ -574,18 +653,19 @@ def cmd_prompt():
 
 def cmd_ruc(sunat_key, opencage_key=None, geoapify_key=None, do_all=False, googlemaps_key=None):
     """
-    Re-geocodifica clínicas usando la dirección oficial de SUNAT por RUC.
+    Re-geocodifica clínicas usando la dirección oficial de SUNAT por RUC (opcional)
+    y/o Google Maps (recomendado).
 
     Por defecto procesa solo las clínicas con coordenadas duplicadas (≥3 clínicas
     en el mismo punto exacto), que son el síntoma más claro de un error de geocoding.
 
     Uso:
-        python geocodificar_v2.py ruc --sunat-key TOKEN
-        python geocodificar_v2.py ruc --sunat-key TOKEN --opencage-key KEY
-        python geocodificar_v2.py ruc --sunat-key TOKEN --all   # todas las filas
+        python geocodificar_v2.py ruc --googlemaps-key KEY --all
+        python geocodificar_v2.py ruc --sunat-key TOKEN --googlemaps-key KEY --all
     """
-    if not sunat_key:
-        print("Necesitás --sunat-key. Registrate gratis en https://apis.net.pe")
+    if not sunat_key and not googlemaps_key and not opencage_key and not geoapify_key:
+        print("Necesitás al menos una API key. Ejemplo:")
+        print("  python geocodificar_v2.py ruc --googlemaps-key KEY --all")
         sys.exit(1)
 
     rows = []
@@ -603,6 +683,11 @@ def cmd_ruc(sunat_key, opencage_key=None, geoapify_key=None, do_all=False, googl
     )
     bad_coords = {k for k, v in coord_counts.items() if v >= 3}
 
+    # Detectar cadenas: RUCs que aparecen en más de 1 fila (sucursales distintas)
+    ruc_counts = Counter(row.get('RUC', '').strip() for row in rows if row.get('RUC', '').strip())
+    chain_rucs = {ruc for ruc, cnt in ruc_counts.items() if cnt > 1}
+    print(f"Cadenas detectadas (mismo RUC en múltiples filas): {len(chain_rucs)} RUCs")
+
     if do_all:
         to_process = list(rows)
         print(f"Modo --all: procesando {len(rows)} clínicas\n")
@@ -612,11 +697,11 @@ def cmd_ruc(sunat_key, opencage_key=None, geoapify_key=None, do_all=False, googl
             if (r.get('Lat', '').strip(), r.get('Lng', '').strip()) in bad_coords
             or not r.get('Lat', '').strip()
         ]
-        print(f"Coordenadas duplicadas detectadas (≥3 clínicas en mismo punto): {len(bad_coords)}")
+        print(f"Coordenadas duplicadas detectadas (>=3 clinicas en mismo punto): {len(bad_coords)}")
         print(f"Clínicas a re-geocodificar: {len(to_process)} de {len(rows)}\n")
 
     if not to_process:
-        print("✓ No hay clínicas a re-geocodificar.")
+        print("OK No hay clinicas a re-geocodificar.")
         return
 
     fixed = 0
@@ -634,10 +719,11 @@ def cmd_ruc(sunat_key, opencage_key=None, geoapify_key=None, do_all=False, googl
             print(f"  Coords actuales: {prev_lat}, {prev_lng}  "
                   f"(compartida con {coord_counts.get((prev_lat, prev_lng), 1)-1} otras)")
 
+        is_chain = ruc in chain_rucs if ruc else False
         lat, lng, sunat_data = geocode_one(
             nombre=nombre, ruc=ruc, direccion=direccion, distrito=distrito, zona=zona,
             sunat_key=sunat_key, opencage_key=opencage_key, geoapify_key=geoapify_key,
-            googlemaps_key=googlemaps_key,
+            googlemaps_key=googlemaps_key, is_chain=is_chain,
         )
 
         if lat:
@@ -645,14 +731,14 @@ def cmd_ruc(sunat_key, opencage_key=None, geoapify_key=None, do_all=False, googl
             if sunat_data:
                 if sunat_data.get('direccion'):
                     row['Direccion'] = sunat_data['direccion']
-                    print(f"  → Dirección SUNAT: {sunat_data['direccion']}")
+                    print(f"  -> Direccion SUNAT: {sunat_data['direccion']}")
                 if sunat_data.get('distrito'):
                     row['Distrito'] = sunat_data['distrito']
             row['Lat'] = f"{lat:.6f}"
             row['Lng'] = f"{lng:.6f}"
             fixed += 1
         else:
-            print(f"  ✗ Sin resultado — se mantienen coords anteriores")
+            print(f"  FALLO - Sin resultado, se mantienen coords anteriores")
 
         # Guardar cada 20 filas para no perder progreso
         if i % 20 == 0:
@@ -795,7 +881,7 @@ if __name__ == '__main__':
     if opencage_key:   apis.append('OpenCage')
     if geoapify_key:   apis.append('Geoapify')
     apis.append('Nominatim(fallback)')
-    print(f"  APIs activas: {' → '.join(apis)}")
+    print(f"  APIs activas: {' -> '.join(apis)}")
     print(f"{'='*60}\n")
 
     do_all = '--all' in sys.argv
