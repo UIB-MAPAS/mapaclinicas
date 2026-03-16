@@ -143,10 +143,19 @@ function parseClinicas(rows) {
   const conteo = {};
   clinicas.forEach(c => { conteo[c.nombre] = (conteo[c.nombre] || 0) + 1; });
 
-  // Para nombres duplicados, agregar distrito como diferenciador
+  // Extrae el nombre de la vía (sin prefijo tipo "Av.", "Jr.", etc. y sin número)
+  function extractVia(direccion) {
+    let s = direccion.replace(/^(AVENIDA|JIRÓN|JIRON|CALLE|PASAJE|PASEO|CARRETERA|AV\.?|JR\.?|CL\.?|PS\.?)\s*/i, '').trim();
+    const m = s.match(/^([A-Za-záéíóúÁÉÍÓÚüÜñÑ][A-Za-z0-9áéíóúÁÉÍÓÚüÜñÑ\s.]+?)(?:\s+(?:N[°º]?|NRO\.?|NUMERO|#)|\s+\d|\s+C\.C\.|\s+URB\.?|\s+MZ|$)/i);
+    if (m) return m[1].trim();
+    return s.split(/\s+/).slice(0, 3).join(' ');
+  }
+
+  // Para nombres duplicados, agregar vía como diferenciador (fallback: distrito)
   clinicas.forEach(c => {
     if (conteo[c.nombre] > 1) {
-      c.displayNombre = c.distrito ? `${c.nombre} · ${c.distrito}` : c.nombre;
+      const via = c.direccion ? extractVia(c.direccion) : '';
+      c.displayNombre = via ? `${c.nombre} · ${via}` : (c.distrito ? `${c.nombre} · ${c.distrito}` : c.nombre);
     } else {
       c.displayNombre = c.nombre;
     }
