@@ -129,7 +129,7 @@ function parseLocales(rows) {
 }
 
 function parseClinicas(rows) {
-  return rows.map(r => ({
+  const clinicas = rows.map(r => ({
     nombre:    trim(r['Nombre']),
     tipo:      trim(r['Tipo']) || 'CLINICA_GENERAL',
     direccion: trim(r['Direccion']),
@@ -138,6 +138,21 @@ function parseClinicas(rows) {
     lat: r['Lat'] ? parseFloat(r['Lat']) : null,
     lng: r['Lng'] ? parseFloat(r['Lng']) : null,
   }));
+
+  // Contar cuántas veces aparece cada nombre
+  const conteo = {};
+  clinicas.forEach(c => { conteo[c.nombre] = (conteo[c.nombre] || 0) + 1; });
+
+  // Para nombres duplicados, agregar distrito como diferenciador
+  clinicas.forEach(c => {
+    if (conteo[c.nombre] > 1) {
+      c.displayNombre = c.distrito ? `${c.nombre} · ${c.distrito}` : c.nombre;
+    } else {
+      c.displayNombre = c.nombre;
+    }
+  });
+
+  return clinicas;
 }
 
 function trim(v) { return (v || '').trim(); }
@@ -458,7 +473,7 @@ function addClinicMarkers(recomendadas, cercanas) {
       })
         .addTo(map)
         .bindPopup(`
-          <div class="popup-title">🏥 ${c.nombre}</div>
+          <div class="popup-title">🏥 ${c.displayNombre}</div>
           <div class="popup-row"><span class="clinic-badge ${badgeInfo.css}">${badgeInfo.label}</span></div>
           <div class="popup-row">📍 ${c.direccion}, ${c.distrito}</div>
           <div class="popup-row">📞 ${c.telefono}</div>
@@ -484,7 +499,7 @@ function clinicHTML(c, rank, isRecomendada, markerIdx) {
     <div class="clinic-item${isRecomendada ? ' recommended-item' : ''}" onclick="flyToMarker(${markerIdx})">
       <div class="clinic-header">
         <span class="clinic-rank">${rank}</span>
-        <span class="clinic-name">${c.nombre}</span>
+        <span class="clinic-name">${c.displayNombre}</span>
         <span class="clinic-distance">${c.distancia.toFixed(2)} km</span>
       </div>
       <div style="margin-bottom:4px">
