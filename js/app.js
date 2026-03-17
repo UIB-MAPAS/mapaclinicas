@@ -74,7 +74,7 @@ function initMap() {
     maxZoom: 19,
   }).addTo(map);
 
-  // localeMarkers se mantiene oculto por defecto
+  localeMarkers.addTo(map);
 }
 
 // ─── Carga CSV genérica ──────────────────────────────────────────────────────
